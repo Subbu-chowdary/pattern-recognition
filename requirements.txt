@@ -1,0 +1,8 @@
+pandas
+numpy
+scipy
+matplotlib
+plotly
+python-binance
+TA-Lib
+kaleido
