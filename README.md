@@ -8,62 +8,82 @@ The primary objective is to identify valid "Cup and Handle" patterns based on de
 
 ## Features
 
-- [cite_start]Fetches historical 1-minute OHLCV data for Binance Futures (BTCUSDT)[cite: 33].
+- Fetches historical 1-minute OHLCV data for Binance Futures (BTCUSDT).
 - Implements robust "Cup and Handle" pattern detection logic.
 - Validates patterns against specific criteria (cup depth, duration, handle retrace, R^2 for cup shape, breakout).
-- [cite_start]Generates high-quality plots of detected patterns with marked cup, handle, and breakout zones[cite: 37, 38].
-- [cite_start]Saves cropped pattern images using Kaleido for smooth rendering[cite: 4, 39].
-- [cite_start]Produces a CSV report summarizing each detected pattern's characteristics and validation status[cite: 42].
+- Generates high-quality plots of detected patterns with marked cup, handle, and breakout zones.
+- Saves cropped pattern images using Kaleido for smooth rendering.
+- Produces a CSV report summarizing each detected pattern's characteristics and validation status.
 
-## [cite_start]Pattern Formation Logic [cite: 5]
+## How It Works
 
-### [cite_start]Cup [cite: 6]
+1. **Data Acquisition:**  
+   The system fetches historical 1-minute OHLCV data for Binance Futures (BTCUSDT) using `fetch_data.py`. This data is saved in the `data/` directory.
 
-- [cite_start]A smooth, rounded bottom shape[cite: 7].
-- [cite_start]Left and right rims (swing highs) at roughly similar price levels[cite: 8].
-- [cite_start]Volume may decrease towards the bottom of the cup and pick up near the rim[cite: 9].
+2. **Preprocessing:**  
+   The raw data is preprocessed to add technical indicators such as ATR (Average True Range) and average candle size, which are used for validation.
 
-### [cite_start]Handle [cite: 10]
+3. **Pattern Detection:**  
+   The main detection logic (in `pattern_detector.py`) scans the data for segments that match the "Cup and Handle" formation rules. It fits a parabolic curve to candidate cup segments, checks rim similarity, cup depth, handle retrace, and breakout criteria.
 
-- [cite_start]A short consolidation after the cup[cite: 11].
-- [cite_start]Typically sloped downward or sideways[cite: 12].
-- [cite_start]Lower high than cup rims[cite: 13].
+4. **Validation:**  
+   Each detected pattern is validated against strict rules (see below). Invalid patterns are discarded or flagged with a reason.
 
-### [cite_start]Breakout [cite: 14]
+5. **Visualization:**  
+   For each valid pattern, a plot is generated using Plotly, marking the cup arc, handle, and breakout zone. Images are saved using Kaleido in the `patterns/` directory.
 
-- [cite_start]Bullish breakout occurs above the handle's upper resistance[cite: 15].
+6. **Reporting:**  
+   A summary CSV report (`report.csv`) is generated, listing all detected patterns with their statistics and validation status.
 
-## [cite_start]Validation Rules [cite: 16]
+## Pattern Formation Logic
 
-- [cite_start]Cup depth must be at least 2x average candle size (1m)[cite: 17].
-- [cite_start]Cup duration: 30 to 300 candles[cite: 18].
-- [cite_start]Handle duration: 5 to 50 candles[cite: 19].
-- [cite_start]Handle high must be below or equal to left/right rim[cite: 20].
-- [cite_start]Handle must retrace no more than 40% of cup depth[cite: 21].
-- [cite_start]Smooth curve fit for the cup with a parabolic shape ($R^2 > 0.85$)[cite: 22].
-- [cite_start]Price breakout must exceed handle high with at least $1.5 \times ATR(14)$[cite: 23].
-- [cite_start]Volume spike on breakout preferred (optional but a bonus)[cite: 24].
+### Cup
 
-## [cite_start]Invalidation Rules [cite: 25]
+- A smooth, rounded bottom shape.
+- Left and right rims (swing highs) at roughly similar price levels.
+- Volume may decrease towards the bottom of the cup and pick up near the rim.
 
-- [cite_start]Handle breaks below cup bottom[cite: 26].
-- [cite_start]Handle lasts longer than 50 candles[cite: 27].
-- [cite_start]Cup is V-shaped, not U-shaped (low R^2 fit)[cite: 28].
-- [cite_start]No breakout after handle formation[cite: 29].
-- [cite_start]Rim levels differ more than 10%[cite: 30].
+### Handle
+
+- A short consolidation after the cup.
+- Typically sloped downward or sideways.
+- Lower high than cup rims.
+
+### Breakout
+
+- Bullish breakout occurs above the handle's upper resistance.
+
+## Validation Rules
+
+- Cup depth must be at least 2x average candle size (1m).
+- Cup duration: 30 to 300 candles.
+- Handle duration: 5 to 50 candles.
+- Handle high must be below or equal to left/right rim.
+- Handle must retrace no more than 40% of cup depth.
+- Smooth curve fit for the cup with a parabolic shape ($R^2 > 0.85$).
+- Price breakout must exceed handle high with at least $1.5 \times ATR(14)$.
+- Volume spike on breakout preferred (optional but a bonus).
+
+## Invalidation Rules
+
+- Handle breaks below cup bottom.
+- Handle lasts longer than 50 candles.
+- Cup is V-shaped, not U-shaped (low R^2 fit).
+- No breakout after handle formation.
+- Rim levels differ more than 10%.
 
 ## Required Deliverables
 
-1.  [cite_start]**Cup and Handle Detection Code:** Identifies at least 30 distinct valid patterns from Binance Futures 1-minute OHLCV data (2024-01-01 to 2025-01-01)[cite: 33, 34].
-2.  [cite_start]**Pattern Plotting and Cropping:** For each valid pattern, a smooth arc plot for the cup [cite: 37][cite_start], clearly marked handle and breakout zone [cite: 38][cite_start], saved as a cropped image using `kaleido` (filename: `cup_handle_<pattern_id>.png`)[cite: 39, 40].
-3.  [cite_start]**Validation Summary Report:** JSON/CSV file (`report.csv`) with stats for each pattern: start/end time [cite: 43][cite_start], cup depth/duration [cite: 44][cite_start], handle depth/duration [cite: 45][cite_start], R^2 value [cite: 46][cite_start], breakout candle timestamp [cite: 47][cite_start], valid/invalid flag with reason (if invalid)[cite: 48].
+1.  **Cup and Handle Detection Code:** Identifies at least 30 distinct valid patterns from Binance Futures 1-minute OHLCV data (2024-01-01 to 2025-01-01).
+2.  **Pattern Plotting and Cropping:** For each valid pattern, a smooth arc plot for the cup, clearly marked handle and breakout zone, saved as a cropped image using `kaleido` (filename: `cup_handle_<pattern_id>.png`).
+3.  **Validation Summary Report:** JSON/CSV file (`report.csv`) with stats for each pattern: start/end time, cup depth/duration, handle depth/duration, R^2 value, breakout candle timestamp, valid/invalid flag with reason (if invalid).
 
 ## Setup and Installation
 
 1.  **Clone the repository:**
 
     ```bash
-    git clone [https://github.com/your-username/cup_handle_detector.git](https://github.com/your-username/cup_handle_detector.git)
+    git clone https://github.com/your-username/cup_handle_detector.git
     cd cup_handle_detector
     ```
 
@@ -83,7 +103,7 @@ The primary objective is to identify valid "Cup and Handle" patterns based on de
 ## Usage
 
 1.  **Fetch Data:**
-    [cite_start]Run `fetch_data.py` to download Binance Futures 1-minute OHLCV data for BTCUSDT from 2024-01-01 to 2025-01-01[cite: 33]. This will save `raw_data.csv` in the `data/` directory.
+    Run `fetch_data.py` to download Binance Futures 1-minute OHLCV data for BTCUSDT from 2024-01-01 to 2025-01-01. This will save `raw_data.csv` in the `data/` directory.
 
     ```bash
     python fetch_data.py
@@ -96,3 +116,11 @@ The primary objective is to identify valid "Cup and Handle" patterns based on de
     ```
 
 ## Project Structure
+
+The project will be evaluated based on:
+
+- **Accuracy of pattern detection:** Aiming for 99% accuracy.
+- **Code quality:** structure, clarity, and efficiency.
+- **Visual clarity of plotted charts**.
+- **Correct application of validation/invalidation logic**.
+- **Robustness:** Handling edge cases and noisy data.
