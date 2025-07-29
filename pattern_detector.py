@@ -1,162 +1,138 @@
+
 import pandas as pd
 import numpy as np
 from scipy.optimize import curve_fit
-from scipy.stats import linregress
 import talib
 
 class PatternDetector:
-    def __init__(self, data):
-        self.data = data
-        self.data['avg_candle_size'] = (self.data['high'] - self.data['low']).mean()
-        self.data['ATR'] = talib.ATR(self.data['high'], self.data['low'], self.data['close'], timeperiod=14)
+    def __init__(self, data,
+                 min_cup_duration=30,
+                 max_cup_duration=300,
+                 min_handle_duration=5,
+                 max_handle_duration=50,
+                 min_r2=0.85,
+                 skip_days_after_pattern=1,
+                 one_pattern_per_day=True):
+        
+        self.data = data.copy()
+        self.min_cup_duration = min_cup_duration
+        self.max_cup_duration = max_cup_duration
+        self.min_handle_duration = min_handle_duration
+        self.max_handle_duration = max_handle_duration
+        self.min_r2 = min_r2
+        self.skip_days_after_pattern = skip_days_after_pattern
+        self.one_pattern_per_day = one_pattern_per_day
+
+        # Precompute average candle size & ATR once
+        self.avg_candle_size = (self.data['high'] - self.data['low']).mean()
+        self.data['ATR'] = talib.ATR(
+            self.data['high'],
+            self.data['low'],
+            self.data['close'],
+            timeperiod=14
+        )
+
+        # Precompute timestamp arrays for faster searching
+        self.timestamps = self.data.index.to_numpy()
+        self.timestamps_int = self.data.index.view(np.int64)
 
     def _parabolic_curve(self, x, a, b, c):
-        """Parabolic function for cup fitting."""
         return a * x**2 + b * x + c
 
     def _fit_parabolic_cup(self, cup_prices):
-        """Fits a parabolic curve to the cup prices and returns R^2."""
+        """Fits a parabolic curve and returns R²."""
         x = np.arange(len(cup_prices))
         try:
-            popt, pcov = curve_fit(self._parabolic_curve, x, cup_prices)
+            popt, _ = curve_fit(self._parabolic_curve, x, cup_prices)
             y_pred = self._parabolic_curve(x, *popt)
-            ss_res = np.sum((cup_prices - y_pred)**2)
-            ss_tot = np.sum((cup_prices - np.mean(cup_prices))**2)
+            ss_res = np.sum((cup_prices - y_pred) ** 2)
+            ss_tot = np.sum((cup_prices - np.mean(cup_prices)) ** 2)
             r_squared = 1 - (ss_res / ss_tot)
             return r_squared, popt
-        except RuntimeError:
-            return -1.0, None # Indicate fit failure
-        except ValueError:
-            return -1.0, None # Indicate fit failure
-
-    def _find_swing_highs_lows(self, segment, window=5):
-        """Finds significant swing highs and lows in a price segment."""
-        # Simple local max/min for swing points
-        swing_highs = []
-        swing_lows = []
-        for i in range(window, len(segment) - window):
-            if segment['high'].iloc[i] == segment['high'].iloc[i-window:i+window+1].max():
-                swing_highs.append(segment.iloc[i].name)
-            if segment['low'].iloc[i] == segment['low'].iloc[i-window:i+window+1].min():
-                swing_lows.append(segment.iloc[i].name)
-        return swing_highs, swing_lows
+        except (RuntimeError, ValueError):
+            return -1.0, None
 
     def detect_patterns(self):
-        """
-        Detects Cup and Handle patterns in the data.
-        Returns a list of dictionaries, each representing a detected pattern.
-        """
         patterns = []
         n = len(self.data)
-        min_cup_duration = 30  # candles
-        max_cup_duration = 300 # candles
-        min_handle_duration = 5  # candles
-        max_handle_duration = 50 # candles
+        # Start from the earliest index which can possibly form a cup
+        i = self.min_cup_duration  
+        last_detected_day = None
 
-        for i in range(n):
-            # Try to find the cup bottom
-            # This is a simplification; a real implementation would use more sophisticated methods
-            # to identify potential cup structures, possibly involving significant swing lows.
-            # For demonstration, we'll iterate and look for cup characteristics.
+        # For speed, grab local copies of columns where possible
+        prices_close = self.data['close'].values
+        atr_vals = self.data['ATR'].values
 
-            # Assume 'i' is the potential right rim of the cup
-            # Look for a cup to the left of 'i'
-            for j in range(i - min_cup_duration, i - max_cup_duration - 1, -1):
-                if j < 0:
-                    continue
-
+        # Use a while loop to allow index skipping after a detected pattern
+        while i < n - self.max_handle_duration - 11:  # buffer for handle & breakout
+            cup_found = False
+            # Bound the cup search indices
+            j_start = max(0, i - self.max_cup_duration)
+            j_end = i - self.min_cup_duration
+            for j in range(j_end, j_start - 1, -1):
                 cup_segment = self.data.iloc[j:i+1]
-                cup_prices = cup_segment['close']
-
-                if len(cup_prices) < min_cup_duration: # Ensure cup duration
+                if len(cup_segment) < self.min_cup_duration:
                     continue
 
-                # Find the lowest point in the cup segment (potential cup bottom)
-                cup_bottom_idx = cup_prices.idxmin()
-                cup_bottom_price = cup_prices.min()
-                cup_bottom_pos = cup_segment.index.get_loc(cup_bottom_idx)
+                cup_prices = cup_segment['close'].values
+                cup_bottom_local = np.argmin(cup_prices)
+                cup_bottom_price = cup_prices[cup_bottom_local]
 
-                # Cup formation check: smooth, rounded bottom (R^2 for parabolic fit)
-                r_squared, popt = self._fit_parabolic_cup(cup_prices)
-                if r_squared < 0.85: #
-                    continue # Not a smooth parabolic shape (V-shaped)
+                r_squared, _ = self._fit_parabolic_cup(cup_prices)
+                if r_squared < self.min_r2:
+                    continue
 
-                # Identify left and right rims
-                # Left rim is the start of the cup segment
-                left_rim_idx = cup_segment.index[0]
+                # Rims from cup segment
                 left_rim_price = cup_segment['high'].iloc[0]
-                # Right rim is the end of the cup segment
-                right_rim_idx = cup_segment.index[-1]
                 right_rim_price = cup_segment['high'].iloc[-1]
-
-                # Rims at similar price levels
-                if abs(left_rim_price - right_rim_price) / ((left_rim_price + right_rim_price) / 2) > 0.10: #
+                if abs(left_rim_price - right_rim_price) / ((left_rim_price + right_rim_price) / 2) > 0.10:
                     continue
 
                 cup_depth = max(left_rim_price, right_rim_price) - cup_bottom_price
-                if cup_depth < 2 * self.data['avg_candle_size'].iloc[i]: #
+                # Use precomputed avg_candle_size instead of per-index DataFrame lookup
+                if cup_depth < 2 * self.avg_candle_size:
                     continue
 
-                # Now look for the handle after the cup
-                for k in range(i + min_handle_duration, i + max_handle_duration + 1):
-                    if k >= n:
-                        continue
-
+                # Now search for a valid handle
+                for k in range(i + self.min_handle_duration, min(i + self.max_handle_duration, n - 11) + 1):
                     handle_segment = self.data.iloc[i:k+1]
                     handle_high = handle_segment['high'].max()
                     handle_low = handle_segment['low'].min()
 
-                    # Handle high must be below or equal to left/right rim
                     if handle_high > max(left_rim_price, right_rim_price):
                         continue
-
-                    # Handle retraces no more than 40% of cup depth
-                    handle_retrace = (max(left_rim_price, right_rim_price) - handle_high)
+                    handle_retrace = max(left_rim_price, right_rim_price) - handle_low
                     if handle_retrace > 0.40 * cup_depth:
                         continue
-
-                    # Handle breaks below cup bottom
                     if handle_low < cup_bottom_price:
                         continue
 
-                    # Handle lasts longer than 50 candles
-                    if len(handle_segment) > max_handle_duration:
+                    # Detect breakout in a fixed 10-candle window after handle end
+                    breakout_segment = self.data.iloc[k+1:min(k+11, n)]
+                    # Use vectorized comparison on breakout_segment
+                    cond = breakout_segment['close'] > handle_high + 1.5 * breakout_segment['ATR']
+                    if not cond.any():
                         continue
 
-                    # Check for breakout after the handle
-                    breakout_start_idx = k + 1
-                    # Define a small window for breakout (e.g., 5-10 candles after handle)
-                    breakout_window = 10
-                    breakout_end_idx = min(k + breakout_window, n - 1)
-
-                    breakout_segment = self.data.iloc[breakout_start_idx:breakout_end_idx+1]
-                    if breakout_segment.empty:
+                    # Ensure bullish breakout occurs above handle's upper resistance
+                    breakout_price = breakout_segment.loc[cond.idxmax(), 'close']
+                    if breakout_price <= handle_high:
                         continue
 
-                    # Breakout occurs above handle's upper resistance
-                    # The resistance for breakout is the handle high
-                    breakout_threshold = handle_high
-
-                    breakout_candle = None
-                    for l in range(len(breakout_segment)):
-                        current_candle = breakout_segment.iloc[l]
-                        # A bullish breakout candle is one that closes significantly above the handle high
-                        if current_candle['close'] > breakout_threshold + 1.5 * current_candle['ATR']: #
-                            breakout_candle = current_candle
-                            break
-                    
-                    if breakout_candle is None: # No breakout after handle formation
+                    # Use the index label directly instead of re-indexing
+                    breakout_idx = cond.idxmax()
+                    pattern_day = cup_segment.index[0].date()
+                    if self.one_pattern_per_day and last_detected_day == pattern_day:
                         continue
 
-                    # If all conditions met, it's a potential pattern
                     pattern = {
                         'start_time': cup_segment.index[0],
-                        'end_time': breakout_candle.name,
-                        'cup_start_idx': self.data.index.get_loc(cup_segment.index[0]),
-                        'cup_end_idx': self.data.index.get_loc(cup_segment.index[-1]),
-                        'handle_start_idx': self.data.index.get_loc(handle_segment.index[0]),
-                        'handle_end_idx': self.data.index.get_loc(handle_segment.index[-1]),
-                        'breakout_candle_idx': self.data.index.get_loc(breakout_candle.name),
+                        'end_time': breakout_idx,
+                        'cup_start_idx': j,
+                        'cup_end_idx': i,
+                        'handle_start_idx': i,
+                        'handle_end_idx': k,
+                        'breakout_candle_idx': self.data.index.get_loc(breakout_idx),
                         'cup_depth': cup_depth,
                         'cup_duration': len(cup_segment),
                         'handle_depth': handle_high - handle_low,
@@ -166,105 +142,22 @@ class PatternDetector:
                         'right_rim_price': right_rim_price,
                         'cup_bottom_price': cup_bottom_price,
                         'handle_high_price': handle_high,
-                        'breakout_price': breakout_candle['close'],
-                        'breakout_candle_timestamp': breakout_candle.name,
+                        'breakout_price': breakout_price,
+                        'breakout_candle_timestamp': breakout_idx,
                         'status': 'Valid',
                         'reason': ''
                     }
                     patterns.append(pattern)
-                    # To avoid overlapping patterns, move the main loop index past the detected pattern
-                    i = breakout_end_idx
-                    break # Break from handle loop to find next cup from new starting point
-                else: # This else belongs to the inner 'for k' loop, meaning no valid handle found
-                    continue
-                break # Break from cup loop to find next cup from new starting point
+                    last_detected_day = pattern_day
+                    # Skip ahead after a pattern is found using precomputed timestamps
+                    skip_time = pd.Timestamp(breakout_idx) + pd.Timedelta(days=self.skip_days_after_pattern)
+                    future_idx = np.searchsorted(self.timestamps_int, np.int64(skip_time.value))
+                    i = max(future_idx, k + 1)
+                    cup_found = True
+                    break  # Exit handle loop once valid handle is found
+                if cup_found:
+                    break  # Cup found, move to next candidate starting at new i
+            if not cup_found:
+                i += 1  # If no cup/handle detected, move forward one step
+
         return patterns
-
-
-# import numpy as np
-# import pandas as pd
-# from scipy.signal import argrelextrema
-# from scipy.stats import linregress
-
-# def is_parabolic_shape(y_vals, tolerance=0.85):
-#     x = np.arange(len(y_vals))
-#     coeffs = np.polyfit(x, y_vals, 2)
-#     y_fit = np.polyval(coeffs, x)
-#     residual = y_vals - y_fit
-#     ss_res = np.sum(residual**2)
-#     ss_tot = np.sum((y_vals - np.mean(y_vals))**2)
-#     r_squared = 1 - (ss_res / ss_tot if ss_tot else 0)
-#     return r_squared >= tolerance
-
-# def detect_patterns(df):
-#     df = df.copy()
-#     df['close'] = df['close'].astype(float)
-#     patterns = []
-
-#     for i in range(30, len(df) - 100):  # start at 30 to leave space for cup
-#         window = df.iloc[i:i+300]
-#         closes = window['close'].values
-
-#         # Detect local minima (potential cup bottoms)
-#         minima_idx = argrelextrema(closes, np.less_equal, order=5)[0]
-#         maxima_idx = argrelextrema(closes, np.greater_equal, order=5)[0]
-
-#         if len(minima_idx) == 0 or len(maxima_idx) < 2:
-#             continue
-
-#         for bottom in minima_idx:
-#             left_candidates = maxima_idx[maxima_idx < bottom]
-#             right_candidates = maxima_idx[maxima_idx > bottom]
-
-#             if len(left_candidates) == 0 or len(right_candidates) == 0:
-#                 continue
-
-#             left = left_candidates[-1]
-#             right = right_candidates[0]
-
-#             # Validation: Cup shape
-#             cup_range = closes[left:right + 1]
-#             if len(cup_range) < 30 or len(cup_range) > 300:
-#                 continue
-
-#             avg_candle = np.mean(np.abs(np.diff(closes)))
-#             cup_depth = max(closes[left], closes[right]) - closes[bottom]
-#             if cup_depth < 2 * avg_candle:
-#                 continue
-
-#             if not is_parabolic_shape(cup_range):
-#                 continue
-
-#             # Detect handle
-#             handle_start = right
-#             handle_end = handle_start + 50 if handle_start + 50 < len(closes) else len(closes) - 1
-#             handle_prices = closes[handle_start:handle_end]
-
-#             if len(handle_prices) < 5:
-#                 continue
-
-#             handle_peak = np.max(handle_prices)
-#             handle_trough = np.min(handle_prices)
-#             handle_retrace = (handle_peak - handle_trough) / cup_depth
-
-#             if handle_peak > closes[right] or handle_retrace > 0.4:
-#                 continue
-
-#             # Breakout detection
-#             breakout_idx = handle_end + np.argmax(closes[handle_end:handle_end+10] > handle_peak)
-#             if breakout_idx == 0:
-#                 continue
-
-#             global_idx = i + left
-#             pattern = {
-#                 "start": i + left,
-#                 "left_rim": i + left,
-#                 "bottom": i + bottom,
-#                 "right_rim": i + right,
-#                 "handle_end": i + handle_end,
-#                 "breakout": i + handle_end + breakout_idx,
-#                 "end": i + handle_end + breakout_idx
-#             }
-#             patterns.append(pattern)
-
-#     return patterns
